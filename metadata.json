@@ -1,0 +1,10 @@
+{
+  "name": "Remix: 恐龙识字乐园",
+  "description": "面向3-6岁幼儿的卡通恐龙主题识字互动应用，Q版卡通、明亮柔和，支持语音读字、麦克风跟读拼音，寓较于乐解锁恐龙贴纸与图鉴。",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

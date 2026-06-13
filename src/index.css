@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Fredoka", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+}
+
+/* Custom shake keyframe for extra cartoon impact */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-6px); }
+  20%, 40%, 60%, 80% { transform: translateX(6px); }
+}
+
+.cartoon-shake {
+  animation: shake 0.5s ease-in-out;
+}
+
+/* Custom cartoon background grid pattern */
+.grid-bg-pattern {
+  background-color: #f7fafc;
+  background-image: radial-gradient(#e2e8f0 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+
