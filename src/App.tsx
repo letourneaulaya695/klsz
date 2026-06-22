@@ -42,6 +42,29 @@ export interface ReviewItem {
   failures: number;
 }
 
+// 帮助函数：专门针对3-6岁幼儿的模糊拼音与同音字判定。
+// 用于彻底解决浏览器 SpeechRecognition 中单字识别容易产生同音错字（如读“木”识别成“目”）、
+// 以及儿童发音不准、平翘舌混淆（zh/z、ch/c、sh/s）、前后鼻音混淆（an/ang、en/eng、in/ing）、以及l/n不分的情况。
+export const getFuzzyPinyin = (pinyinRaw: string): string => {
+  let p = pinyinRaw.toLowerCase().trim();
+  p = p.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // 剔除音调标号以便进行纯字母声部韵部对比
+
+  // 1. 消除平翘舌混淆 (zh -> z, ch -> c, sh -> s)
+  if (p.startsWith('zh')) p = 'z' + p.slice(2);
+  else if (p.startsWith('ch')) p = 'c' + p.slice(2);
+  else if (p.startsWith('sh')) p = 's' + p.slice(2);
+
+  // 2. 消除 l / n 混淆 (南方口音常见)
+  if (p.startsWith('n')) p = 'l' + p.slice(1);
+
+  // 3. 消除前后鼻音混淆 (ang -> an, eng -> en, ing -> in)
+  if (p.endsWith('ang')) p = p.slice(0, -3) + 'an';
+  else if (p.endsWith('eng')) p = p.slice(0, -3) + 'en';
+  else if (p.endsWith('ing')) p = p.slice(0, -3) + 'in';
+
+  return p;
+};
+
 export default function App() {
   // Level & Word navigation State
   const [currentLevelNum, setCurrentLevelNum] = useState<number>(1); // 1 to 10
@@ -72,6 +95,8 @@ export default function App() {
   const [audioEnabled, setAudioEnabled] = useState<boolean>(false);
   const [unlockedJustNow, setUnlockedJustNow] = useState<string | null>(null);
   const [alwaysShowPinyin, setAlwaysShowPinyin] = useState<boolean>(false);
+  const [autoJumpMode, setAutoJumpMode] = useState<'instant' | 'normal' | 'slow' | 'off'>('normal');
+  const [kidFriendlyMode, setKidFriendlyMode] = useState<boolean>(true); // Forgiving pronunciation matching by default
 
   // References
   const recognitionRef = useRef<any>(null);
@@ -103,6 +128,14 @@ export default function App() {
       const storedWordIdx = localStorage.getItem('dino_current_word_idx');
       if (storedWordIdx) {
         setCurrentWordIndexInLevel(parseInt(storedWordIdx, 10) || 0);
+      }
+      const storedAutoJump = localStorage.getItem('dino_auto_jump_mode');
+      if (storedAutoJump) {
+        setAutoJumpMode(storedAutoJump as any);
+      }
+      const storedKidFriendly = localStorage.getItem('dino_kid_friendly_mode');
+      if (storedKidFriendly) {
+        setKidFriendlyMode(storedKidFriendly === 'true');
       }
     } catch (e) {
       console.warn("Failed to load local storage state:", e);
@@ -151,6 +184,18 @@ export default function App() {
       localStorage.setItem('dino_current_word_idx', currentWordIndexInLevel.toString());
     } catch (e) {}
   }, [currentWordIndexInLevel]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dino_auto_jump_mode', autoJumpMode);
+    } catch (e) {}
+  }, [autoJumpMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dino_kid_friendly_mode', kidFriendlyMode ? 'true' : 'false');
+    } catch (e) {}
+  }, [kidFriendlyMode]);
 
   // Derive active level configuration
   const activeLevel = DINO_LEVELS[currentLevelNum - 1] || DINO_LEVELS[0];
@@ -356,11 +401,63 @@ export default function App() {
   const evaluateToddlerSpeech = (spoken: string) => {
     const cleanWord = currentWord.word.trim();
     const cleanSpoken = spoken.trim();
+    
+    // 1. 本字直切匹配（包含在识别汉字中，或汉字完全对等）
     if (cleanSpoken.includes(cleanWord) || cleanWord.includes(cleanSpoken)) {
       handleCorrectAction();
-    } else {
-      handleIncorrectAction();
+      return;
     }
+
+    // 2. 宽容认读匹配 (针对 Web Speech API 容易将单字识别成同音字的底层机制)
+    try {
+      // 目标汉字去除音调后的标准拼音 (例如: "木" => "mu")
+      const targetPinyin = pinyin(cleanWord, { toneType: 'none' }).trim().toLowerCase();
+      const targetFuzzy = getFuzzyPinyin(targetPinyin);
+
+      const spokenChars = cleanSpoken.split('');
+      let matchedChar = '';
+      let matchedPinyin = '';
+      let isFuzzyMatched = false;
+
+      for (const char of spokenChars) {
+        // 获取识别到的每个字的拼音
+        const charPinyin = pinyin(char, { toneType: 'none' }).trim().toLowerCase();
+        const charFuzzy = getFuzzyPinyin(charPinyin);
+
+        // a. 完全同音字匹配（如读“木”[mu]，识别为“目”[mu]）
+        if (charPinyin === targetPinyin) {
+          matchedChar = char;
+          matchedPinyin = charPinyin;
+          break;
+        } 
+        // b. 模糊拼音混淆匹配（平翘等，在开启 kidFriendlyMode 时生效）
+        else if (kidFriendlyMode && charFuzzy === targetFuzzy) {
+          matchedChar = char;
+          matchedPinyin = charPinyin;
+          isFuzzyMatched = true;
+          break;
+        }
+      }
+
+      if (matchedChar) {
+        if (isFuzzyMatched) {
+          setQuizBubble(`✨ 太棒了！迪诺听到你读了像“${matchedChar}（${matchedPinyin}）”的音，非常接近，判定通过！`);
+          speakNarratorText(`听到你读了像${matchedChar}的音，拼音非常接近了，真聪明！`);
+        } else {
+          setQuizBubble(`🎉 读得真准！虽然认成了“${matchedChar}”，但由于声音 [${targetPinyin}] 完全相同，判定通过！`);
+          speakNarratorText(`发音正确，同音有效！恭喜你读对了！`);
+        }
+
+        // 调用通过后的核心交互逻辑（加金币，撒花，自动跳转等）
+        handleCorrectAction();
+        return;
+      }
+    } catch (err) {
+      console.warn("Speech fuzzy matching error:", err);
+    }
+
+    // fallback to normal incorrect handler
+    handleIncorrectAction();
   };
 
   // Score loop & success
@@ -387,13 +484,23 @@ export default function App() {
     // Progress reward sticker unlocking
     evaluateStickersUnlock();
 
-    // Auto-advance loop: move forward after standard 2.8 seconds
+    // Auto-advance loop: move forward after configured delay
     if (autoPlayTimeoutRef.current) clearTimeout(autoPlayTimeoutRef.current);
-    autoPlayTimeoutRef.current = setTimeout(() => {
-      setShowConfetti(false);
-      setUnlockedJustNow(null);
-      handleMoveNext(true); 
-    }, 2800);
+    
+    if (autoJumpMode !== 'off') {
+      const delays = {
+        instant: 600,
+        normal: 1600,
+        slow: 3000
+      };
+      const delay = delays[autoJumpMode] || 1600;
+      
+      autoPlayTimeoutRef.current = setTimeout(() => {
+        setShowConfetti(false);
+        setUnlockedJustNow(null);
+        handleMoveNext(true); 
+      }, delay);
+    }
   };
 
   const handleIncorrectAction = () => {
@@ -497,6 +604,25 @@ export default function App() {
     setAudioEnabled(true);
     playWebAudioBeep('click');
     speakStandardWord();
+  };
+
+  const cycleAutoJumpMode = () => {
+    playWebAudioBeep('click');
+    let nextMode: 'instant' | 'normal' | 'slow' | 'off' = 'normal';
+    if (autoJumpMode === 'instant') nextMode = 'normal';
+    else if (autoJumpMode === 'normal') nextMode = 'slow';
+    else if (autoJumpMode === 'slow') nextMode = 'off';
+    else if (autoJumpMode === 'off') nextMode = 'instant';
+    
+    setAutoJumpMode(nextMode);
+    
+    let desc = '读对后1.5秒自动跳转';
+    if (nextMode === 'instant') desc = '读对后立即跳转下一个字';
+    if (nextMode === 'normal') desc = '读对后等待1.5秒自动跳转';
+    if (nextMode === 'slow') desc = '读对后慢速等待3秒自动跳转';
+    if (nextMode === 'off') desc = '已关闭自动跳转，请手动点击下一个字';
+    
+    speakNarratorText(desc);
   };
 
   // Get current Level mastered word count
@@ -729,6 +855,42 @@ export default function App() {
                   title="开启动态拼音展示"
                 >
                   {alwaysShowPinyin ? '📖 总是显示拼音' : '🤫 读对再现拼音'}
+                </button>
+
+                {/* Parents automatic jump mode toggle */}
+                <button
+                  type="button"
+                  onClick={cycleAutoJumpMode}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-full border-2 transition-all flex items-center gap-1 cursor-pointer ${
+                    autoJumpMode !== 'off'
+                      ? 'bg-orange-100 border-orange-300 text-orange-850 font-extrabold shadow-sm'
+                      : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-500'
+                  }`}
+                  title="跟读正确后是否自动跳转到下一个汉字"
+                >
+                  {autoJumpMode === 'instant' && '⚡ 读对立即跳'}
+                  {autoJumpMode === 'normal' && '⏳ 读对自动跳 (1.5s)'}
+                  {autoJumpMode === 'slow' && '🐢 读对慢速跳 (3.0s)'}
+                  {autoJumpMode === 'off' && '❌ 关闭自动跳转'}
+                </button>
+
+                {/* Kids friendly forgiving matcher toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    playWebAudioBeep('click');
+                    const nextMode = !kidFriendlyMode;
+                    setKidFriendlyMode(nextMode);
+                    speakNarratorText(nextMode ? '已开启宽容判定模式，更适合3-6岁宝贝跟读' : '已关闭宽容模式，现在是严格发音判定');
+                  }}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-full border-2 transition-all flex items-center gap-1 cursor-pointer ${
+                    kidFriendlyMode 
+                      ? 'bg-emerald-100 border-emerald-300 text-emerald-850 font-extrabold shadow-sm' 
+                      : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-500'
+                  }`}
+                  title="为3-6岁孩子专门优化的模糊发音跟读判定。开启后即使识别出同音字、拼音相近也会判定通过哦！"
+                >
+                  {kidFriendlyMode ? '🎨 宝贝宽容判定：开' : '🎯 严格判定：关'}
                 </button>
 
                 {/* Parents manual review bookmark button */}
